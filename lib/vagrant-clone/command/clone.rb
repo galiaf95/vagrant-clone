@@ -1,77 +1,82 @@
-require_relative '../command/errors'
-require_relative '../utils/vagrantfile_manager'
-require_relative 'provider/docker'
-
-require 'optparse'
+require 'json'
+require 'docker'
 
 module VagrantClone
-  class Command < Vagrant.plugin("2", "command")
+  class Clone < Vagrant.plugin('2', 'command')
+    CLONE_CON_OPT_DESC = 'Json string, that specifies how many clones of each machine to make or skip. ' +
+        'Example: vagrant clone \'{"machine1":1,"machine2":3,...}\'. ' +
+        'If machine exists in current config, but is not mentioned in clone config, then it will have 0 copies.'
 
-    def initialize(argv, env)
-      super
-      @main_args, @sub_command, @sub_args = split_main_and_subcommand(argv)
+    def self.synopsis
+      'clone virtual machines into new Vagrant environment'
     end
 
-    def execute
-      options = {}
-      opts = OptionParser.new do |o|
-        o.banner = 'Usage: vagrant clone origin [options] [-h]'
-        o.on('-n PATH_TO_NEW_VAGRANT_ENVIRONMENT', '--new-vagrant-env-path', 'Where to create new Vagrantfile') do |c|
-          options[:new_vagrant_env_path] = c
+    def parse_options
+      options = {:clone_config => nil, :new_env_path => nil}
+      option_parser = OptionParser.new do |o|
+        o.banner = 'Usage: vagrant clone -c CLONE_CONFIG [-n NEW_VAGRANT_ENVIRONMENT_PATH] [-h]'
+        o.on('-c', '--clone-config CLONE_CONFIG', CLONE_CON_OPT_DESC) do |op|
+          begin
+            options[:clone_config] = JSON.parse op
+            options[:clone_config] = Hash[options[:clone_config].map {|k, v| [k.to_sym, v]}]
+          rescue Exception => e
+            @env.ui.error e.message
+            raise VagrantClone::Errors::InvalidCloneConfigOption
+          end
+          options[:clone_config].each_key do |key|
+            unless @env.machine_names.include? key
+              @env.ui.error "Machine #{key} does not exists in current Vagrant environment, check clone config..."
+              raise VagrantClone::Errors::InvalidCloneConfigOption
+            end
+          end
         end
-        o.on('-h', '--help', 'Help') do |c|
-          @env.ui.info(opts.help, :prefix => false)
+        o.on('-n', '--new-env-path NEW_VAGRANT_ENVIRONMENT_PATH', 'Path where to clone Vagrant environment') do |op|
+          raise VagrantClone::Errors::NewEnvironmentDirectoryExists if Dir.exist? op
+          raise VagrantClone::Errors::NewEnvironmentDirNotEmpty unless Dir.glob(Pathname.new(op).join('**/*')).empty?
+          options[:new_env_path] = op
+        end
+        o.on_tail('-h', '--help', 'Show this message') do
+          @env.ui.info o
           exit
         end
       end
-      argv = parse_options(opts)
-      timestamp = Time.new.to_i
-      options[:vagrantfile_name] = 'Vagrantfile'
-      options[:current_vagrant_env_path] = Dir.pwd
-      unless File.exists?("#{options[:current_vagrant_env_path]}/#{options[:vagrantfile_name]}")
-        raise VagrantClone::Errors::NotVagrantEnvironment
+      option_parser.parse!
+      if options[:clone_config].nil?
+        @env.ui.error option_parser.help
+        raise OptionParser::MissingArgument
       end
-      unless options[:new_vagrant_env_path]
-        options[:new_vagrant_env_path] = File.expand_path("#{Dir.pwd}/../#{File.basename options[:current_vagrant_env_path]}_#{timestamp}")
-        FileUtils.mkdir options[:new_vagrant_env_path]
+      @env.ui.info "Received args: #{options}"
+      return options[:clone_config], options[:new_env_path]
+    end
+
+    def get_machines_and_provider(vagrant_env)
+      machines = {}
+      providers = []
+      vagrant_env.machine_index.each do |entry|
+        if vagrant_env.machine_names.include? entry.name.to_sym and vagrant_env.local_data_path == entry.local_data_path
+          machine = vagrant_env.machine entry.name.to_sym, entry.provider.to_sym
+          machines[entry.name.to_sym] = machine
+          providers << entry.provider.to_sym
+        end
       end
-      all_machines = Array.new
-      current_vagrantfile = File.read("#{options[:current_vagrant_env_path]}/#{options[:vagrantfile_name]}")
-      if argv.empty?
-        if current_vagrantfile.match('config.vm.define')
-          current_vagrantfile.split("\n").each do |line|
-            match = line.match(/config\.vm\.define\s+([^\s]+)\s+/)
-            if match
-              all_machines.push match.captures[0].gsub("\"", '').gsub("'", '')
-            end
-          end
+      raise VagrantClone::Errors::MultipleProvidersNotSupported if providers.uniq.length > 1
+      return machines, providers.uniq[0]
+    end
+
+    def execute
+      clone_config, new_env_path = parse_options
+      machines, provider = get_machines_and_provider @env
+      require_relative '../util/clone_manager_base'
+      case provider
+        when :docker
+          require_relative '../util/clone_managers/docker'
+        when :libvirt
+          require_relative '../util/clone_managers/libvirt'
         else
-          all_machines.push 'default'
-        end
-      else
-        all_machines.push argv
+          raise VagrantClone::Errors::UnsupportedProvider
       end
-      all_machines.uniq!
-      options[:vms_data] = Array.new
-      # Checking all machines to be alive
-      all_machines.each do |specific_machine|
-        with_target_vms(specific_machine) do |machine|
-          raise VagrantClone::Errors::VmNotCreated if machine.state.id == :not_created
-        end
-      end
-      all_machines.each do |specific_machine|
-        with_target_vms(specific_machine) do |machine|
-          vm_data = {
-              :cloned_name => "#{machine.name}",
-              :cloned_image_name => "#{machine.name}_#{timestamp}",
-              :origin_id => machine.id,
-              :provider => machine.provider
-          }
-          options[:vms_data].push (vm_data)
-          Docker.new(vm_data, @env) if /Docker/.match(machine.provider.to_s)
-        end
-      end
-      VagrantfileManager.new(options, @env)
+      clone_manager = VagrantClone::CloneManager.new clone_config, new_env_path, machines, provider, @env
+      clone_manager.create_clones
     end
   end
 end

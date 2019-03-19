@@ -1,0 +1,11 @@
+Vagrant.configure(2) do |config|
+    config.vm.define "node0" do |node0|
+        node0.vm.box = 'yk0/ubuntu-xenial'
+    end
+    config.vm.define "node1" do |node1|
+        node0.vm.box = 'yk0/ubuntu-xenial'
+    end
+    config.vm.define "node2" do |node2|
+        node0.vm.box = 'yk0/ubuntu-xenial'
+    end
+end

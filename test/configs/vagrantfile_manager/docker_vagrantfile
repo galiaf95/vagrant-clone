@@ -1,0 +1,29 @@
+Vagrant.configure(2) do |config|
+    config.vm.define "node0" do |node0|
+        node0.vm.provider "docker" do |d|
+            d.image = "ubuntu:vagrant"
+            d.env = {"container"=>"docker"}
+            d.privileged = true
+            d.has_ssh = true
+            d.cmd = ["/usr/sbin/sshd", "-D"]
+        end
+    end
+    config.vm.define "node1" do |node1|
+        node1.vm.provider "docker" do |d|
+            d.image = "ubuntu:vagrant"
+            d.env = {"container"=>"docker"}
+            d.privileged = true
+            d.has_ssh = true
+            d.cmd = ["/usr/sbin/sshd", "-D"]
+        end
+    end
+    config.vm.define "node2" do |node2|
+        node2.vm.provider "docker" do |d|
+            d.image = "ubuntu:vagrant"
+            d.env = {"container"=>"docker"}
+            d.privileged = true
+            d.has_ssh = true
+            d.cmd = ["/usr/sbin/sshd", "-D"]
+        end
+    end
+end
